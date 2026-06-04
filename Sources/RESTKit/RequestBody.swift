@@ -1,16 +1,22 @@
 import Foundation
 
-public enum RequestBody {
-    case json(Encodable)
+public enum RequestBody: Sendable {
+    case json(any Encodable & Sendable)
     case text(String)
     case binary(Data)
-    case form([String: Any])
+    case form([String: any Sendable])
     case none
 
-    public var data: Data? {
+    /// - Parameter encoder: The encoder used for `.json` bodies. Pass a configured
+    ///   instance to customize encoding (e.g. date or key strategies).
+    public func data(using encoder: JSONEncoder = JSONEncoder()) throws -> Data? {
         switch self {
         case let .json(encodable):
-            return try? JSONEncoder().encode(encodable)
+            do {
+                return try encoder.encode(encodable)
+            } catch {
+                throw APIError.encodingFailed(error)
+            }
 
         case let .text(string):
             return string.data(using: .utf8)
@@ -31,10 +37,6 @@ public enum RequestBody {
                 if value is NSNull {
                     return []
                 }
-				
-				if let stringValue = value as? String, stringValue.isEmpty {
-					return []
-				}
 
                 let encodedKey = key.formURLEncoded()
                 let encodedValue = "\(value)".formURLEncoded()

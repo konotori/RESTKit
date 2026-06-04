@@ -1,35 +1,37 @@
 import Foundation
 
-public protocol Endpoint {
+public protocol Endpoint: Sendable {
     var baseURL: String { get }
     var path: String { get }
     var method: HTTPMethod { get }
     var headers: [String: String]? { get }
-    var queryParameters: [String: Any]? { get }
+    var queryParameters: [String: any Sendable]? { get }
     var requestBody: RequestBody { get }
     var responseType: ResponseType { get }
+	/// Whether an auth interceptor should attach credentials to this endpoint.
+	/// Defaults to `false`; endpoints that need authentication opt in explicitly.
 	var needsAuthentication: Bool { get }
-	var allowRetry: Bool { get }
 
-    func asURLRequest() throws -> URLRequest
+    func asURLRequest(bodyEncoder: JSONEncoder) throws -> URLRequest
 }
 
 public extension Endpoint {
 	var needsAuthentication: Bool {
-		true
+		false
 	}
-	
-	var allowRetry: Bool {
-		HTTPMethod.idempotentMethods.contains(method)
-	}
-	
-    func asURLRequest() throws -> URLRequest {
+
+    /// Builds a complete, ready-to-send URLRequest.
+    /// - Parameter bodyEncoder: The encoder used for `.json` request bodies.
+    ///   `APIClient` always passes its own configured encoder. When calling this
+    ///   directly (bypassing the client), pass the same encoder your client uses
+    ///   so bodies stay consistent.
+    func asURLRequest(bodyEncoder: JSONEncoder = JSONEncoder()) throws -> URLRequest {
         let url = try buildURL()
         var request = URLRequest(url: url)
         request.httpMethod = method.rawValue
         addHeaders(to: &request)
-        addBody(to: &request)
-        
+        try addBody(to: &request, using: bodyEncoder)
+
         return request
     }
 	
@@ -44,7 +46,11 @@ public extension Endpoint {
 		
         components.path = normalizedPath(for: components)
         components.queryItems = makeQueryItems()
-        
+        // URLComponents leaves "+" unescaped in query values, but many servers
+        // decode "+" as a space. Escape it explicitly so values round-trip intact.
+        components.percentEncodedQuery = components.percentEncodedQuery?
+            .replacingOccurrences(of: "+", with: "%2B")
+
         guard let url = components.url else {
             throw APIError.invalidURL
         }
@@ -63,8 +69,10 @@ public extension Endpoint {
 			  !queryParameters.isEmpty else {
 			return nil
 		}
-		
-		return queryParameters.flatMap { key, value -> [URLQueryItem] in
+
+		// Sort by key so the resulting URL is deterministic (cache keys, request
+		// signing, snapshot tests).
+		return queryParameters.sorted { $0.key < $1.key }.flatMap { key, value -> [URLQueryItem] in
 			// Handle array (e.g. tags[]=swift&tags[]=ios)
 			if let array = value as? [Any] {
 				return array.map { item in
@@ -93,7 +101,7 @@ public extension Endpoint {
 		}
 	}
 
-    private func addBody(to request: inout URLRequest) {
-        request.httpBody = requestBody.data
+    private func addBody(to request: inout URLRequest, using bodyEncoder: JSONEncoder) throws {
+        request.httpBody = try requestBody.data(using: bodyEncoder)
     }
 }

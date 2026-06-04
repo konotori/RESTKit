@@ -71,9 +71,9 @@ struct APIClientTests {
         let mock = MockHTTPClient()
         mock.mockResponse = .init(data: "OK".data(using: .utf8)!, statusCode: 200)
 
-        var adaptOrder: [String] = []
-        let interceptor1 = RecordingInterceptor(name: "A") { adaptOrder.append("A") }
-        let interceptor2 = RecordingInterceptor(name: "B") { adaptOrder.append("B") }
+        let adaptOrder = LockedBox<[String]>([])
+        let interceptor1 = RecordingInterceptor(name: "A") { adaptOrder.value.append("A") }
+        let interceptor2 = RecordingInterceptor(name: "B") { adaptOrder.value.append("B") }
 
         let client = APIClient(client: mock, interceptors: [interceptor1, interceptor2])
         let endpoint = TestEndpoint(
@@ -85,7 +85,7 @@ struct APIClientTests {
 
         let _: String = try await client.request(endpoint)
         // Last registered runs first during adapt (reversed), so B then A
-        #expect(adaptOrder == ["B", "A"])
+        #expect(adaptOrder.value == ["B", "A"])
     }
 
     @Test("didComplete is called on failure")
@@ -93,8 +93,8 @@ struct APIClientTests {
         let mock = MockHTTPClient()
         mock.shouldThrowError = URLError(.notConnectedToInternet)
 
-        var didCompleteCalled = false
-        let interceptor = CompletionRecordingInterceptor { didCompleteCalled = true }
+        let didCompleteCalled = LockedBox(false)
+        let interceptor = CompletionRecordingInterceptor { didCompleteCalled.value = true }
 
         let client = APIClient(client: mock, interceptors: [interceptor])
         let endpoint = TestEndpoint(
@@ -107,7 +107,7 @@ struct APIClientTests {
         do {
             let _: String = try await client.request(endpoint)
         } catch {}
-        #expect(didCompleteCalled == true)
+        #expect(didCompleteCalled.value == true)
     }
 
     @Test("didComplete is called on success")
@@ -115,8 +115,8 @@ struct APIClientTests {
         let mock = MockHTTPClient()
         mock.mockResponse = .init(data: "OK".data(using: .utf8)!, statusCode: 200)
 
-        var didCompleteCalled = false
-        let interceptor = CompletionRecordingInterceptor { didCompleteCalled = true }
+        let didCompleteCalled = LockedBox(false)
+        let interceptor = CompletionRecordingInterceptor { didCompleteCalled.value = true }
 
         let client = APIClient(client: mock, interceptors: [interceptor])
         let endpoint = TestEndpoint(
@@ -127,17 +127,92 @@ struct APIClientTests {
         )
 
         let _: String = try await client.request(endpoint)
-        #expect(didCompleteCalled == true)
+        #expect(didCompleteCalled.value == true)
     }
+
+    // MARK: - Body Encoder
+
+    @Test("Client's bodyEncoder is applied to JSON request bodies")
+    func clientBodyEncoderIsApplied() async throws {
+        struct Payload: Codable {
+            let firstName: String
+        }
+
+        let mock = MockHTTPClient()
+        mock.mockResponse = .init(data: "OK".data(using: .utf8)!, statusCode: 200)
+
+        let encoder = JSONEncoder()
+        encoder.keyEncodingStrategy = .convertToSnakeCase
+
+        let client = APIClient(client: mock, bodyEncoder: encoder)
+        let endpoint = TestEndpoint(
+            path: "/users",
+            method: .post,
+            requestBody: .json(Payload(firstName: "Alice")),
+            responseType: .text
+        )
+
+        let _: String = try await client.request(endpoint)
+
+        let bodyData = try #require(mock.recordedRequest?.httpBody)
+        let string = try #require(String(data: bodyData, encoding: .utf8))
+        #expect(string.contains("first_name"))
+    }
+
+    // MARK: - Sendable / Concurrency
+
+    @Test("APIClient and core types are Sendable")
+    func coreTypesAreSendable() {
+        // Compile-time guarantees: these calls only compile if the types are Sendable.
+        func requiresSendable<T: Sendable>(_: T.Type) {}
+        requiresSendable(APIClient.self)
+        requiresSendable(APIError.self)
+        requiresSendable(RequestBody.self)
+        requiresSendable(ResponseType.self)
+        requiresSendable(HTTPMethod.self)
+
+        // The canonical consumer pattern: a shared client in a static let.
+        _ = SharedClientHolder.shared
+    }
+
+    @Test("APIClient handles concurrent requests from multiple tasks")
+    func concurrentRequests() async throws {
+        let mock = MockHTTPClient()
+        mock.mockResponse = .init(data: "OK".data(using: .utf8)!, statusCode: 200)
+
+        let client = APIClient(client: mock)
+        let endpoint = TestEndpoint(
+            path: "/concurrent",
+            method: .get,
+            requestBody: .none,
+            responseType: .text
+        )
+
+        try await withThrowingTaskGroup(of: String.self) { group in
+            for _ in 0 ..< 20 {
+                group.addTask {
+                    try await client.request(endpoint)
+                }
+            }
+            for try await result in group {
+                #expect(result == "OK")
+            }
+        }
+    }
+}
+
+// Compiles only because APIClient is Sendable (static let requires it in Swift 6).
+private enum SharedClientHolder {
+    static let shared = APIClient()
 }
 
 // MARK: - Test Interceptors
 
-private final class RecordingInterceptor: RequestInterceptor {
+private final class RecordingInterceptor: RequestInterceptor, Sendable {
     let name: String
-    let onAdapt: () -> Void
+    let onAdapt: @Sendable () -> Void
 
-    init(name: String, onAdapt: @escaping () -> Void) {
+    init(name: String, onAdapt: @escaping @Sendable () -> Void) {
         self.name = name
         self.onAdapt = onAdapt
     }
@@ -148,10 +223,10 @@ private final class RecordingInterceptor: RequestInterceptor {
     }
 }
 
-private final class CompletionRecordingInterceptor: RequestInterceptor {
-    let onComplete: () -> Void
+private final class CompletionRecordingInterceptor: RequestInterceptor, Sendable {
+    let onComplete: @Sendable () -> Void
 
-    init(onComplete: @escaping () -> Void) {
+    init(onComplete: @escaping @Sendable () -> Void) {
         self.onComplete = onComplete
     }
 

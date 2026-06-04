@@ -1,7 +1,8 @@
 import Foundation
 
-public enum APIError: Error, LocalizedError, Equatable {
+public enum APIError: Error, LocalizedError, Equatable, Sendable {
     case invalidURL
+    case encodingFailed(Error)
     case requestFailed(Error)
     case invalidResponse
     case decodingFailed(Error)
@@ -16,6 +17,8 @@ public enum APIError: Error, LocalizedError, Equatable {
         switch self {
         case .invalidURL:
             "Invalid URL."
+        case let .encodingFailed(error):
+            "Failed to encode request body: \(error.localizedDescription)"
         case let .requestFailed(error):
             "Request failed with error: \(error.localizedDescription)"
         case .invalidResponse:
@@ -42,6 +45,8 @@ public enum APIError: Error, LocalizedError, Equatable {
         case (.invalidURL, .invalidURL),
              (.invalidResponse, .invalidResponse):
             return true
+        case let (.encodingFailed(e1), .encodingFailed(e2)):
+            return (e1 as NSError).isEqual(e2 as NSError)
         case let (.requestFailed(e1), .requestFailed(e2)):
             return (e1 as NSError).isEqual(e2 as NSError)
         case let (.decodingFailed(e1), .decodingFailed(e2)):

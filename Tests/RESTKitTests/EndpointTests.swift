@@ -320,33 +320,9 @@ struct EndpointTests {
         #expect(request.httpBody == nil)
     }
     
-    // MARK: - Endpoint Defaults (allowRetry, needsAuthentication)
+    // MARK: - Endpoint Defaults (needsAuthentication)
 
-    @Test("GET endpoint allowRetry is true")
-    func allowRetryForGet() {
-        let endpoint = TestEndpoint(
-            baseURL: "https://api.test.com",
-            path: "/users",
-            method: .get,
-            requestBody: .none,
-            responseType: .text
-        )
-        #expect(endpoint.allowRetry == true)
-    }
-
-    @Test("POST endpoint allowRetry is false")
-    func allowRetryForPost() {
-        let endpoint = TestEndpoint(
-            baseURL: "https://api.test.com",
-            path: "/users",
-            method: .post,
-            requestBody: .none,
-            responseType: .text
-        )
-        #expect(endpoint.allowRetry == false)
-    }
-
-    @Test("Default needsAuthentication is true")
+    @Test("Default needsAuthentication is false")
     func defaultNeedsAuthentication() {
         let endpoint = TestEndpoint(
             baseURL: "https://api.test.com",
@@ -355,7 +331,33 @@ struct EndpointTests {
             requestBody: .none,
             responseType: .text
         )
-        #expect(endpoint.needsAuthentication == true)
+        #expect(endpoint.needsAuthentication == false)
+    }
+
+    // MARK: - Body Encoder
+
+    @Test("Custom bodyEncoder is used when building the request")
+    func customBodyEncoderIsUsed() throws {
+        struct Payload: Codable {
+            let firstName: String
+        }
+
+        let endpoint = TestEndpoint(
+            baseURL: "https://api.test.com",
+            path: "/users",
+            method: .post,
+            requestBody: .json(Payload(firstName: "Alice")),
+            responseType: .text
+        )
+
+        let encoder = JSONEncoder()
+        encoder.keyEncodingStrategy = .convertToSnakeCase
+
+        let request = try endpoint.asURLRequest(bodyEncoder: encoder)
+        let bodyData = try #require(request.httpBody)
+        let string = try #require(String(data: bodyData, encoding: .utf8))
+
+        #expect(string.contains("first_name"))
     }
 
     // MARK: - HTTP Method

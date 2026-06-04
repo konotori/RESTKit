@@ -1,10 +1,10 @@
 import Foundation
 
-public protocol ResponseDecoder {
+public protocol ResponseDecoder: Sendable {
     func decode(_ data: Data, as responseType: ResponseType) throws -> Any
 }
 
-public final class DefaultResponseDecoder: ResponseDecoder {
+public final class DefaultResponseDecoder: ResponseDecoder, Sendable {
 	private let jsonDecoder: JSONDecoder
 	
 	public init(jsonDecoder: JSONDecoder = JSONDecoder()) {

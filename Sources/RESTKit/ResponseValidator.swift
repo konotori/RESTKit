@@ -1,10 +1,10 @@
 import Foundation
 
-public protocol ResponseValidator {
+public protocol ResponseValidator: Sendable {
     func validate(statusCode: Int, data: Data?) throws
 }
 
-public final class DefaultResponseValidator: ResponseValidator {
+public final class DefaultResponseValidator: ResponseValidator, Sendable {
 	public init() {}
 	
     public func validate(statusCode: Int, data: Data?) throws {

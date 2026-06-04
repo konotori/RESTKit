@@ -1,8 +1,8 @@
 import Foundation
 
-public enum ResponseType {
-    case json(Decodable.Type)
+public enum ResponseType: Sendable {
+    case json(any (Decodable & Sendable).Type)
     case text
     case data
-    case custom((Data) throws -> Any)
+    case custom(@Sendable (Data) throws -> any Sendable)
 }

@@ -114,6 +114,76 @@ struct ErrorHandlingTests {
 		}
 	}
 	
+	// MARK: Encoding
+	@Test("Body encode failure surfaces as encodingFailed from request")
+	func encodingFailureSurfacesFromRequest() async {
+		struct FailingPayload: Encodable {
+			func encode(to encoder: Encoder) throws {
+				throw EncodingError.invalidValue(
+					"value",
+					EncodingError.Context(codingPath: [], debugDescription: "boom")
+				)
+			}
+		}
+
+		let apiClient = APIClient(client: mockClient)
+		let endpoint = TestEndpoint(
+			path: "/users",
+			method: .post,
+			requestBody: .json(FailingPayload()),
+			responseType: .text
+		)
+
+		await #expect {
+			let _: String = try await apiClient.request(endpoint)
+		} throws: { error in
+			guard let apiError = error as? APIError,
+				  case .encodingFailed = apiError else {
+				return false
+			}
+			return true
+		}
+	}
+
+	// MARK: Cancellation
+	@Test("CancellationError is not wrapped into APIError")
+	func cancellationErrorPropagates() async {
+		mockClient.shouldThrowError = CancellationError()
+
+		let apiClient = APIClient(client: mockClient)
+		let endpoint = TestEndpoint(
+			path: "/users",
+			method: .get,
+			requestBody: .none,
+			responseType: .text
+		)
+
+		await #expect {
+			let _: String = try await apiClient.request(endpoint)
+		} throws: { error in
+			error is CancellationError
+		}
+	}
+
+	@Test("URLError.cancelled surfaces as CancellationError")
+	func urlErrorCancelledSurfacesAsCancellation() async {
+		mockClient.shouldThrowError = URLError(.cancelled)
+
+		let apiClient = APIClient(client: mockClient)
+		let endpoint = TestEndpoint(
+			path: "/users",
+			method: .get,
+			requestBody: .none,
+			responseType: .text
+		)
+
+		await #expect {
+			let _: String = try await apiClient.request(endpoint)
+		} throws: { error in
+			error is CancellationError
+		}
+	}
+
 	// MARK: Invalid Response
 	@Test("Non-HTTP response throws invalidResponse")
 	func invalidResponse() async {

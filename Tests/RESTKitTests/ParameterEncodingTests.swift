@@ -25,6 +25,44 @@ struct ParameterEncodingTests {
 		#expect(urlString.contains("tags%5B%5D=swift&tags%5B%5D=ios&tags%5B%5D=mobile"))
 	}
 	
+	@Test("Query items are sorted by key for deterministic URLs")
+	func queryDeterministicOrder() throws {
+		let endpoint = TestEndpoint(
+			baseURL: "https://api.test.com",
+			path: "/items",
+			method: .get,
+			headers: nil,
+			queryParameters: ["zebra": "1", "apple": "2", "mango": "3"],
+			requestBody: .none,
+			responseType: .text
+		)
+
+		let request = try endpoint.asURLRequest()
+		let urlString = try #require(request.url?.absoluteString)
+
+		#expect(urlString.contains("apple=2&mango=3&zebra=1"))
+	}
+
+	@Test("Plus sign in query value is percent-encoded")
+	func queryPlusSignEncoded() throws {
+		let endpoint = TestEndpoint(
+			baseURL: "https://api.test.com",
+			path: "/search",
+			method: .get,
+			headers: nil,
+			queryParameters: ["q": "c++ language", "tz": "+07:00"],
+			requestBody: .none,
+			responseType: .text
+		)
+
+		let request = try endpoint.asURLRequest()
+		let urlString = try #require(request.url?.absoluteString)
+
+		// "+" must be escaped, otherwise servers decode it as a space.
+		#expect(urlString.contains("q=c%2B%2B%20language"))
+		#expect(urlString.contains("tz=%2B07:00"))
+	}
+
 	@Test("Query nil values are ignored")
 	func queryNilValues() throws {
 		let endpoint = TestEndpoint(
@@ -83,7 +121,7 @@ struct ParameterEncodingTests {
 	
 	@Test("Query nested dictionary is flattened to string")
 	func queryNestedDictionary() throws {
-		let nested = ["nested": ["key": "value"]] as [String: Any]
+		let nested = ["nested": ["key": "value"]] as [String: any Sendable]
 		let endpoint = TestEndpoint(
 			baseURL: "https://api.test.com",
 			path: "/test",

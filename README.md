@@ -18,7 +18,7 @@ A lightweight, Swift 6-native networking foundation. Fully `Sendable`, data-race
 
 ```swift
 // Package.swift
-.package(url: "https://github.com/your-org/RESTKit.git", from: "1.0.0")
+.package(url: "https://github.com/konotori/RESTKit.git", from: "1.0.0")
 ```
 
 ## Quick Start

@@ -1,18 +1,20 @@
 # RESTKit
 
-RESTKit is a lightweight, reusable Swift networking foundation designed to be embedded in many projects. It provides clean abstractions, testability, and extensibility without forcing app-specific policies.
+A lightweight, Swift 6-native networking foundation. Fully `Sendable`, data-race safe, and **compile-time typed**: an endpoint declares what it returns, so requesting the wrong type is a build error — not a runtime surprise.
+
+- Swift 6 language mode, strict concurrency, zero dependencies
+- iOS 13+ / macOS 11+
 
 ## Features
-- `Endpoint` protocol with base URL, path, method, headers, query, body, and response type.
-- `APIClientProtocol` + `APIClient` for request execution, validation, and decoding.
-- `HTTPClient` abstraction for easy mocking and testing.
-- `RequestInterceptor` for request adaptation and lifecycle hooks.
-- `ResponseValidator` and `ResponseDecoder` with sensible defaults.
-- Strongly typed `RequestBody` and `ResponseType`.
-- `APIError` for consistent error handling.
+
+- **Compile-time response typing** — `Endpoint` carries its response type as an associated type. No casts, no `Any`, no "type mismatch" at runtime.
+- **`ResponseStrategy`** — declare *what* a response is: `JSON<Model>`, `Text`, `Raw`, or your own (e.g. envelope unwrapping).
+- **Fully `Sendable`** — safe to hold in a `static let shared`, call from any actor, and fan out across tasks.
+- **Interceptors** — adapt requests (auth, API keys) and observe completions (logging, metrics).
+- **One place to configure conventions** — `bodyEncoder` / `responseDecoder` (snake_case, date formats) live on the client.
+- **Honest errors** — encoding failures throw instead of silently sending an empty body; task cancellation surfaces as `CancellationError`, never wrapped as a network failure.
 
 ## Installation
-Add as a Swift Package.
 
 ```swift
 // Package.swift
@@ -21,317 +23,384 @@ Add as a Swift Package.
 
 ## Quick Start
 
-### 1) Define an Endpoint
 ```swift
 import RESTKit
 
-struct GetUserEndpoint: Endpoint {
-    let userId: Int
-
-    var baseURL: String { "https://api.example.com" }
-    var path: String { "/users/\(userId)" }
-    var method: HTTPMethod { .get }
-    var headers: [String : String]? { nil }
-    var queryParameters: [String : Any]? { nil }
-    var requestBody: RequestBody { .none }
-    var responseType: ResponseType { .json(User.self) }
-}
-
-struct User: Decodable {
+struct User: Decodable, Sendable {
     let id: Int
     let name: String
 }
+
+// 1) Describe the call — only declare what differs from the defaults.
+struct GetUser: Endpoint {
+    typealias Response = JSON<User>          // ← what this endpoint returns
+
+    let id: Int
+
+    var baseURL: String { "https://api.example.com" }
+    var path: String { "/users/\(id)" }
+    var method: HTTPMethod { .get }
+}
+
+// 2) Make the request — the result type flows from the endpoint.
+let client = APIClient()
+let user = try await client.request(GetUser(id: 1))   // user: User. No annotation needed.
 ```
 
-### 2) Create a client and make a request
+And the safety net:
+
 ```swift
-let client = APIClient()
-let endpoint = GetUserEndpoint(userId: 1)
-let user: User = try await client.request(endpoint)
+let post: Post = try await client.request(GetUser(id: 1))
+// ❌ Compile error: cannot convert value of type 'User' to specified type 'Post'
 ```
 
 ## Core Concepts
 
+RESTKit splits responsibilities along one rule:
+
+| | Owns | Examples |
+|---|---|---|
+| **`Endpoint` = WHAT** | What the call is | path, method, body content, response type |
+| **`APIClient` = HOW** | How calls are performed | JSON conventions, validation, interceptors, error contract |
+
 ### Endpoint
-`Endpoint` describes everything needed to build a `URLRequest`.
 
-- `baseURL`: base host (e.g. `https://api.example.com`)
-- `path`: resource path (e.g. `/users`)
-- `method`: HTTP method
-- `headers`: custom headers
-- `queryParameters`: query dictionary
-- `requestBody`: body data and content type
-- `responseType`: how to decode the response
+```swift
+public protocol Endpoint<Response>: Sendable {
+    associatedtype Response: ResponseStrategy
 
-Defaults:
-- `needsAuthentication` → `true`
-- `allowRetry` → `true` for idempotent methods (a hint for higher layers)
+    var baseURL: String { get }
+    var path: String { get }
+    var method: HTTPMethod { get }
+    var headers: [String: String]? { get }              // default: nil
+    var queryParameters: [String: any Sendable]? { get } // default: nil
+    var requestBody: RequestBody { get }                 // default: .none
+    var needsAuthentication: Bool { get }                // default: false
+
+    func asURLRequest(bodyEncoder: JSONEncoder) throws -> URLRequest
+}
+```
+
+Endpoint parameters become stored properties — endpoints are plain values you can compare, log, and unit test in isolation.
+
+Query parameter behavior:
+- Sorted by key → deterministic URLs (stable cache keys, request signing, snapshot tests).
+- Arrays expand to `key[]=a&key[]=b`.
+- `NSNull` values are skipped.
+- `+` is percent-encoded (`%2B`) so servers don't decode it as a space.
+
+### ResponseStrategy
+
+`Response` names a *strategy*, not just a model:
+
+| Strategy | Result type | Use for |
+|---|---|---|
+| `JSON<Model>` | `Model` | JSON APIs (decoded with the client's `responseDecoder`) |
+| `Text` | `String` | Plain-text responses |
+| `Raw` | `Data` | Binary downloads, files |
+
+Custom formats are a small conformance away — written once, reusable by any endpoint:
+
+```swift
+/// Unwraps the common { "data": ... } envelope.
+enum Enveloped<Model: Decodable & Sendable>: ResponseStrategy {
+    struct Envelope: Decodable { let data: Model }
+
+    static func decode(_ data: Data, using decoder: JSONDecoder) throws -> Model {
+        try decoder.decode(Envelope.self, from: data).data
+    }
+}
+
+struct GetWrappedUser: Endpoint {
+    typealias Response = Enveloped<User>   // reads exactly like what it does
+    ...
+}
+```
+
+Strategies throw their natural errors (`DecodingError`, your parser's error, ...); `APIClient` normalizes everything to `APIError.decodingFailed` in one place.
 
 ### RequestBody
-Supported body types:
-- `.json(Encodable)`
-- `.text(String)`
-- `.binary(Data)`
-- `.form([String: Any])`
-- `.none`
-
-`form` uses `application/x-www-form-urlencoded` rules, skips `NSNull` and empty strings, and supports arrays (duplicate keys).
-
-### ResponseType
-Supported response types:
-- `.json(Decodable.Type)`
-- `.text`
-- `.data`
-- `.custom((Data) throws -> Any)`
-
-### ResponseDecoder / ResponseValidator
-Default implementations:
-- `DefaultResponseDecoder` handles JSON, text, data, and custom.
-- `DefaultResponseValidator` maps HTTP codes into `APIError`.
 
 ```swift
+var requestBody: RequestBody { .json(CreateUserRequest(name: "Alice")) }
+```
+
+| Case | Content-Type | Notes |
+|---|---|---|
+| `.json(any Encodable & Sendable)` | `application/json` | Encoded with the client's `bodyEncoder`. Encoding failures throw `APIError.encodingFailed` — never a silent empty body. |
+| `.text(String)` | `text/plain` | UTF-8 |
+| `.binary(Data)` | `application/octet-stream` | Sent as-is |
+| `.form([String: any Sendable])` | `application/x-www-form-urlencoded` | Percent-encoded, space → `+`, arrays repeat the key, `NSNull` skipped, empty strings kept (`key=`) |
+| `.none` | — | No body |
+
+A `Content-Type` you set explicitly in `headers` always wins.
+
+### APIClient
+
+All conventions are configured once, at the client (parameters follow the data flow of a request):
+
+```swift
+let bodyEncoder = JSONEncoder()
+bodyEncoder.keyEncodingStrategy = .convertToSnakeCase
+bodyEncoder.dateEncodingStrategy = .iso8601
+
+let responseDecoder = JSONDecoder()
+responseDecoder.keyDecodingStrategy = .convertFromSnakeCase
+responseDecoder.dateDecodingStrategy = .iso8601
+
 let client = APIClient(
-    responseValidator: DefaultResponseValidator(),
-    responseDecoder: DefaultResponseDecoder()
+    client: URLSession.shared,                       // transport (HTTPClient)
+    bodyEncoder: bodyEncoder,                        // request side
+    responseDecoder: responseDecoder,                // response side
+    responseValidator: DefaultResponseValidator(),   // status-code policy
+    interceptors: [AuthInterceptor()]                // hooks
 )
 ```
 
-### Per-API ResponseDecoder / ResponseValidator
-Different APIs may use different status code rules or response formats. You can create multiple `APIClient` instances with different decoders/validators and choose per endpoint group.
+`APIClient` is `Sendable` — the shared-instance pattern just works under Swift 6:
 
 ```swift
-// Example: API A uses normal JSON + standard status mapping
-let apiAClient = APIClient(
-    responseValidator: DefaultResponseValidator(),
-    responseDecoder: DefaultResponseDecoder()
+enum API {
+    static let shared = APIClient()
+}
+```
+
+### Error handling
+
+Every failure surfaces as `APIError`, except cancellation:
+
+| Case | Meaning |
+|---|---|
+| `invalidURL` | `baseURL`/`path` could not form a URL |
+| `encodingFailed(Error)` | Request body failed to encode |
+| `requestFailed(Error)` | Transport-level failure (no connectivity, timeout, ...) |
+| `invalidResponse` | Response was not HTTP |
+| `redirectionError` / `clientError` / `serverError` / `unexpectedStatusCode` | Status-code buckets (4xx/5xx carry the response `Data?`) |
+| `decodingFailed(Error)` | Response strategy failed to decode |
+| `custom(String)` | For your own validators/interceptors |
+
+**Cancellation contract:** if the surrounding `Task` is cancelled (e.g. a SwiftUI `.task` whose view disappeared), `request` throws `CancellationError` — not an `APIError`. Don't show error alerts for it:
+
+```swift
+do {
+    user = try await client.request(GetUser(id: 1))
+} catch is CancellationError {
+    // user left the screen — do nothing
+} catch let error as APIError {
+    showAlert(error.localizedDescription)
+}
+```
+
+## Organizing Endpoints
+
+### Single backend (most apps) — one extension, zero per-endpoint cost
+
+```swift
+extension Endpoint {
+    var baseURL: String { "https://api.myapp.com" }
+}
+
+struct GetProducts: Endpoint {
+    typealias Response = JSON<[Product]>
+    let category: String
+
+    var path: String { "/v1/products" }
+    var method: HTTPMethod { .get }
+    var queryParameters: [String: any Sendable]? { ["category": category] }
+}
+```
+
+### Multiple services — a 2-line marker protocol per service
+
+The marker protocol is also the home for service-wide conventions (auth, headers):
+
+```swift
+protocol GitHubEndpoint: Endpoint {}
+extension GitHubEndpoint {
+    var baseURL: String { "https://api.github.com" }
+    var needsAuthentication: Bool { true }
+    var headers: [String: String]? { ["Accept": "application/vnd.github+json"] }
+}
+
+enum GitHub {   // namespace for discoverability
+    struct SearchRepos: GitHubEndpoint {
+        typealias Response = JSON<[Repo]>
+        let query: String
+
+        var path: String { "/search/repositories" }
+        var method: HTTPMethod { .get }
+        var queryParameters: [String: any Sendable]? { ["q": query] }
+    }
+}
+
+let repos = try await client.request(GitHub.SearchRepos(query: "networking"))
+```
+
+### One-off calls — `APIEndpoint`, no custom type needed
+
+```swift
+let entries = try await client.request(
+    APIEndpoint<JSON<[DictionaryEntry]>>(
+        baseURL: "https://api.dictionaryapi.dev",
+        path: "/api/v2/entries/en/swift",
+        method: .get
+    )
 )
-
-// Example: API B returns JSON even on errors (custom validator),
-// and sometimes wraps data under a "payload" key (custom decoder).
-struct APIBValidator: ResponseValidator {
-    func validate(statusCode: Int, data: Data) throws {
-        // Treat 200-299 as success, 400-499 as client error,
-        // and map 500+ to server error (customize as needed).
-        try DefaultResponseValidator().validate(statusCode: statusCode, data: data)
-    }
-}
-
-struct APIBDecoder: ResponseDecoder {
-    func decode(data: Data, as responseType: ResponseType) throws -> Any {
-        // Example: unwrap { "payload": ... } for JSON responses.
-        guard case let .json(type) = responseType else {
-            return try DefaultResponseDecoder().decode(data: data, as: responseType)
-        }
-        let raw = try JSONSerialization.jsonObject(with: data) as? [String: Any]
-        if let payload = raw?["payload"] {
-            let payloadData = try JSONSerialization.data(withJSONObject: payload)
-            return try JSONDecoder().decode(type, from: payloadData)
-        }
-        return try JSONDecoder().decode(type, from: data)
-    }
-}
-
-let apiBClient = APIClient(
-    responseValidator: APIBValidator(),
-    responseDecoder: APIBDecoder()
-)
 ```
 
-### HTTPClient
-`HTTPClient` abstracts the transport. `URLSession` already conforms.
+## Interceptors
 
 ```swift
-public protocol HTTPClient {
-    func perform(request: URLRequest) async throws -> (Data, URLResponse)
+public protocol RequestInterceptor: Sendable {
+    /// Modify the request before it is sent.
+    func adapt(_ request: URLRequest, for endpoint: any Endpoint) async throws -> URLRequest
+
+    /// Observe the outcome (success, failure, or CancellationError).
+    /// Not called if the request could not be built.
+    func didComplete(_ request: URLRequest, result: Result<(Data, URLResponse), Error>, for endpoint: any Endpoint) async
 }
 ```
 
-You can provide a custom client for testing:
-```swift
-final class MockHTTPClient: HTTPClient {
-    func perform(request: URLRequest) async throws -> (Data, URLResponse) {
-        // return mock data + response
-    }
-}
-```
+Ordering (onion model): for `interceptors: [A, B]`, **B adapts first and A adapts last**, so the first registered interceptor sees the final request. `didComplete` runs in registration order.
 
-### RequestInterceptor
-Interceptors allow you to adapt requests and observe completion.
+### Bearer token auth
 
-```swift
-struct AuthInterceptor: RequestInterceptor {
-    func adapt(_ request: URLRequest, for endpoint: Endpoint) async throws -> URLRequest {
-        var r = request
-        r.setValue("Bearer token", forHTTPHeaderField: "Authorization")
-        return r
-    }
-}
-
-let client = APIClient(interceptors: [AuthInterceptor()])
-```
-
-## Advanced Use Cases
-
-### AuthInterceptor with Bearer Token (and refresh)
-Use an actor-backed token store to safely read/update tokens, and only attach auth for endpoints that require it.
+Endpoints opt in via `needsAuthentication` (default `false` — explicit is safer than implicit when credentials are involved):
 
 ```swift
 actor TokenStore {
     private var token: String?
 
-    func currentToken() -> String? { token }
-    func update(token: String) { self.token = token }
-
-    func refreshTokenIfNeeded() async throws -> String {
-        // Call your auth service here and update token.
-        let newToken = "new-token"
-        self.token = newToken
-        return newToken
+    func validToken() async throws -> String {
+        if let token { return token }
+        let refreshed = try await refresh()   // call your auth service
+        token = refreshed
+        return refreshed
     }
 }
 
 struct BearerAuthInterceptor: RequestInterceptor {
     let tokenStore: TokenStore
 
-    func adapt(_ request: URLRequest, for endpoint: Endpoint) async throws -> URLRequest {
-        guard endpoint.needsAuthentication else { return request }
-        var r = request
-        let token = await tokenStore.currentToken() ?? (try await tokenStore.refreshTokenIfNeeded())
-        r.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        return r
+    func adapt(_ request: URLRequest, for endpoint: any Endpoint) async throws -> URLRequest {
+        guard endpoint.needsAuthentication,
+              request.url?.host == "api.myapp.com"   // second line of defense against token leaks
+        else { return request }
+
+        var request = request
+        let token = try await tokenStore.validToken()
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        return request
     }
 }
 ```
 
-### API Key (Header or Query)
-Some APIs require a static key. You can add it in headers or query string.
+### API key
 
 ```swift
-struct ApiKeyHeaderInterceptor: RequestInterceptor {
+struct APIKeyInterceptor: RequestInterceptor {
     let apiKey: String
 
-    func adapt(_ request: URLRequest, for endpoint: Endpoint) async throws -> URLRequest {
-        var r = request
-        r.setValue(apiKey, forHTTPHeaderField: "X-API-Key")
-        return r
+    func adapt(_ request: URLRequest, for endpoint: any Endpoint) async throws -> URLRequest {
+        var request = request
+        request.setValue(apiKey, forHTTPHeaderField: "X-API-Key")
+        return request
     }
 }
+```
 
-struct ApiKeyQueryInterceptor: RequestInterceptor {
-    let apiKey: String
+### Logging / metrics
 
-    func adapt(_ request: URLRequest, for endpoint: Endpoint) async throws -> URLRequest {
-        guard let url = request.url,
-              var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
-            return request
+```swift
+struct LoggingInterceptor: RequestInterceptor {
+    func didComplete(_ request: URLRequest, result: Result<(Data, URLResponse), Error>, for endpoint: any Endpoint) async {
+        switch result {
+        case .success: print("✅ \(endpoint.path)")
+        case .failure(let error): print("❌ \(endpoint.path): \(error)")
         }
-        var items = components.queryItems ?? []
-        items.append(URLQueryItem(name: "api_key", value: apiKey))
-        components.queryItems = items
-
-        var r = request
-        r.url = components.url
-        return r
     }
 }
 ```
 
-### Retrying API Client (with backoff)
-RESTKit keeps retry policy out of core. Wrap `APIClient` to add retry logic and honor `Endpoint.allowRetry`.
+## Retry (decorator pattern)
+
+RESTKit keeps retry policy out of the core. Wrap the client and use `HTTPMethod.idempotentMethods` to retry only safe methods:
 
 ```swift
-struct RetryPolicy {
+struct RetryingAPIClient: APIClientProtocol {
+    let base: any APIClientProtocol
     let maxAttempts: Int
-    let baseDelay: UInt64 // nanoseconds
 
-    func delay(for attempt: Int) -> UInt64 {
-        // Exponential backoff: 0.3s, 0.6s, 1.2s, ...
-        baseDelay * UInt64(1 << max(0, attempt - 1))
-    }
-}
-
-final class RetryingAPIClient: APIClientProtocol {
-    private let base: APIClientProtocol
-    private let policy: RetryPolicy
-
-    init(base: APIClientProtocol, policy: RetryPolicy) {
-        self.base = base
-        self.policy = policy
-    }
-
-    func request<T>(_ endpoint: Endpoint) async throws -> T {
+    func request<E: Endpoint>(_ endpoint: E) async throws -> E.Response.Output {
         var attempt = 1
         while true {
             do {
                 return try await base.request(endpoint)
+            } catch is CancellationError {
+                throw CancellationError()            // never retry cancellation
             } catch {
-                guard endpoint.allowRetry, attempt < policy.maxAttempts else { throw error }
-                let delay = policy.delay(for: attempt)
-                try await Task.sleep(nanoseconds: delay)
+                guard HTTPMethod.idempotentMethods.contains(endpoint.method),
+                      attempt < maxAttempts
+                else { throw error }
+
+                try await Task.sleep(nanoseconds: 300_000_000 << (attempt - 1))  // 0.3s, 0.6s, ...
                 attempt += 1
             }
         }
     }
 }
 
-let baseClient = APIClient(interceptors: [BearerAuthInterceptor(tokenStore: TokenStore())])
-let retrying = RetryingAPIClient(
-    base: baseClient,
-    policy: RetryPolicy(maxAttempts: 3, baseDelay: 300_000_000)
-)
+let client = RetryingAPIClient(base: APIClient(), maxAttempts: 3)
 ```
 
-### Using `didComplete` for logging/metrics
-Observe every request to log errors or record metrics.
+## Testing
+
+Mock at the transport seam — `HTTPClient` is one method:
 
 ```swift
-struct LoggingInterceptor: RequestInterceptor {
-    func didComplete(_ request: URLRequest, result: Result<(Data, URLResponse), Error>, for endpoint: Endpoint) async {
-        switch result {
-        case .success((_, let response)):
-            print("✅ \(endpoint.path) \(response)")
-        case .failure(let error):
-            print("❌ \(endpoint.path) \(error)")
-        }
-    }
+public protocol HTTPClient: Sendable {
+    func perform(request: URLRequest) async throws -> (Data, URLResponse)
 }
 ```
 
-### APIError
-Standard error types:
-- `invalidURL`
-- `requestFailed(Error)`
-- `invalidResponse`
-- `decodingFailed(Error)`
-- `typeMismatch`
-- `clientError` / `serverError` / `redirectionError`
-- `unexpectedStatusCode`
-- `custom(String)`
+```swift
+struct StubHTTPClient: HTTPClient {
+    let data: Data
+    let statusCode: Int
 
-## Extensibility
-RESTKit is designed to be extended per app:
-- Add new `RequestInterceptor` types (authentication, caching, analytics).
-- Wrap `APIClient` with decorators (retry, circuit breaker, caching).
-- Provide custom `ResponseDecoder` for XML or other formats.
+    func perform(request: URLRequest) async throws -> (Data, URLResponse) {
+        let response = HTTPURLResponse(
+            url: request.url!, statusCode: statusCode, httpVersion: nil, headerFields: nil
+        )!
+        return (data, response)
+    }
+}
 
-## Testing
-The package includes unit tests for:
-- HTTP methods
-- endpoint URL building
-- request body encoding
-- response decoding/validation
-- interceptor behavior
+let client = APIClient(client: StubHTTPClient(data: userJSON, statusCode: 200))
+let user = try await client.request(GetUser(id: 1))
+```
 
-You can run tests with:
+Endpoints are testable without any networking at all:
+
+```swift
+let request = try GetUser(id: 1).asURLRequest()
+#expect(request.url?.absoluteString == "https://api.example.com/users/1")
+```
+
+Run the package's own suite (90+ tests) with:
+
 ```bash
 swift test
 ```
 
 ## Design Goals
-- Lightweight and dependency-free
-- Easy to test
-- Minimal policy in core
-- Ready for reuse across projects
+
+- **Compile-time safety over runtime checks** — if it builds, the types line up.
+- **Endpoint = WHAT, Client = HOW** — declarations stay tiny; conventions live in one place.
+- **Minimal policy in core** — retry, caching, and auth flows compose on top via interceptors and decorators.
+- **Swift 6 first** — `Sendable` end to end, no `@unchecked` in the library.
+- Lightweight and dependency-free.
 
 ## License
-MIT (or your preferred license)
+
+MIT

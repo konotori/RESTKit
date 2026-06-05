@@ -16,7 +16,7 @@ struct ParameterEncodingTests {
 			headers: nil,
 			queryParameters: ["tags": ["swift", "ios", "mobile"]],
 			requestBody: .none,
-			responseType: .text
+			responseType: Text.self
 		)
 		
 		let request = try endpoint.asURLRequest()
@@ -34,7 +34,7 @@ struct ParameterEncodingTests {
 			headers: nil,
 			queryParameters: ["zebra": "1", "apple": "2", "mango": "3"],
 			requestBody: .none,
-			responseType: .text
+			responseType: Text.self
 		)
 
 		let request = try endpoint.asURLRequest()
@@ -52,7 +52,7 @@ struct ParameterEncodingTests {
 			headers: nil,
 			queryParameters: ["q": "c++ language", "tz": "+07:00"],
 			requestBody: .none,
-			responseType: .text
+			responseType: Text.self
 		)
 
 		let request = try endpoint.asURLRequest()
@@ -72,7 +72,7 @@ struct ParameterEncodingTests {
 			headers: nil,
 			queryParameters: ["q": "test", "filter": NSNull()],
 			requestBody: .none,
-			responseType: .text
+			responseType: Text.self
 		)
 		
 		let request = try endpoint.asURLRequest()
@@ -91,7 +91,7 @@ struct ParameterEncodingTests {
 			headers: nil,
 			queryParameters: ["q": "hello world & more = test", "emoji": "🚀"],
 			requestBody: .none,
-			responseType: .text
+			responseType: Text.self
 		)
 		
 		let request = try endpoint.asURLRequest()
@@ -110,7 +110,7 @@ struct ParameterEncodingTests {
 			headers: nil,
 			queryParameters: ["q": ""],
 			requestBody: .none,
-			responseType: .text
+			responseType: Text.self
 		)
 		
 		let request = try endpoint.asURLRequest()
@@ -129,7 +129,7 @@ struct ParameterEncodingTests {
 			headers: nil,
 			queryParameters: ["data": nested],
 			requestBody: .none,
-			responseType: .text
+			responseType: Text.self
 		)
 		
 		let request = try endpoint.asURLRequest()
@@ -147,7 +147,7 @@ struct ParameterEncodingTests {
 			headers: nil,
 			queryParameters: nil,
 			requestBody: .none,
-			responseType: .text
+			responseType: Text.self
 		)
 		
 		let request = try endpoint.asURLRequest()

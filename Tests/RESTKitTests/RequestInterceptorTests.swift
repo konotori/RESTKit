@@ -15,7 +15,7 @@ struct RequestInterceptorTests {
             path: "/users",
             method: .get,
             requestBody: .none,
-            responseType: .text
+            responseType: Text.self
         )
 
         struct DefaultInterceptor: RequestInterceptor {}
@@ -34,7 +34,7 @@ struct RequestInterceptorTests {
             path: "/users",
             method: .get,
             requestBody: .none,
-            responseType: .text
+            responseType: Text.self
         )
 
         struct DefaultInterceptor: RequestInterceptor {}
@@ -54,11 +54,11 @@ struct RequestInterceptorTests {
             path: "/users",
             method: .get,
             requestBody: .none,
-            responseType: .text
+            responseType: Text.self
         )
 
         struct AuthInterceptor: RequestInterceptor {
-            func adapt(_ request: URLRequest, for endpoint: Endpoint) async throws -> URLRequest {
+            func adapt(_ request: URLRequest, for endpoint: any Endpoint) async throws -> URLRequest {
                 var r = request
                 r.setValue("Bearer token123", forHTTPHeaderField: "Authorization")
                 return r

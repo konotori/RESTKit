@@ -1,20 +1,20 @@
 import Foundation
 
 public protocol APIClientProtocol: Sendable {
-    func request<T>(_ endpoint: Endpoint) async throws -> T
+    func request<E: Endpoint>(_ endpoint: E) async throws -> E.Response.Output
 }
 
 public final class APIClient: APIClientProtocol, Sendable {
     private let client: HTTPClient
 	private let bodyEncoder: JSONEncoder
-    private let responseDecoder: ResponseDecoder
+    private let responseDecoder: JSONDecoder
     private let responseValidator: ResponseValidator
 	private let interceptors: [any RequestInterceptor]
 
     public init(
         client: HTTPClient = URLSession.shared,
 		bodyEncoder: JSONEncoder = JSONEncoder(),
-		responseDecoder: ResponseDecoder = DefaultResponseDecoder(),
+		responseDecoder: JSONDecoder = JSONDecoder(),
         responseValidator: ResponseValidator = DefaultResponseValidator(),
 		interceptors: [any RequestInterceptor] = []
     ) {
@@ -25,29 +25,22 @@ public final class APIClient: APIClientProtocol, Sendable {
 		self.interceptors = interceptors
     }
 
-    public func request<T>(_ endpoint: Endpoint) async throws -> T {
+    public func request<E: Endpoint>(_ endpoint: E) async throws -> E.Response.Output {
 		var request = try endpoint.asURLRequest(bodyEncoder: bodyEncoder)
-		
+
 		do {
 			request = try await adapt(request, for: endpoint)
-			
+
 			let (data, response) = try await client.perform(request: request)
-			
+
 			guard let httpResponse = response as? HTTPURLResponse else {
 				throw APIError.invalidResponse
 			}
-			
+
 			try responseValidator.validate(statusCode: httpResponse.statusCode, data: data)
-			
-			let decodedObject = try responseDecoder.decode(data, as: endpoint.responseType)
-			
-			guard let result = decodedObject as? T else {
-				throw APIError.typeMismatch(
-					expected: String(describing: T.self),
-					actual: String(describing: type(of: decodedObject))
-				)
-			}
-			
+
+			let result = try decodeResponse(E.Response.self, from: data)
+
 			await notifyCompletion(request, result: .success((data, httpResponse)), for: endpoint)
 			return result
 		} catch {
@@ -61,7 +54,7 @@ public final class APIClient: APIClientProtocol, Sendable {
 	/// `interceptors: [A, B]`, B adapts first and A adapts last, so the first
 	/// registered interceptor sees the final request. `didComplete` is notified
 	/// in registration order.
-	private func adapt(_ request: URLRequest, for endpoint: Endpoint) async throws -> URLRequest {
+	private func adapt(_ request: URLRequest, for endpoint: any Endpoint) async throws -> URLRequest {
 		var currentRequest = request
 		
 		for interceptor in interceptors.reversed() {
@@ -71,12 +64,24 @@ public final class APIClient: APIClientProtocol, Sendable {
 		return currentRequest
 	}
 	
-	private func notifyCompletion(_ request: URLRequest, result: Result<(Data, URLResponse), Error>, for endpoint: Endpoint) async {
+	private func notifyCompletion(_ request: URLRequest, result: Result<(Data, URLResponse), Error>, for endpoint: any Endpoint) async {
 		for interceptor in interceptors {
 			await interceptor.didComplete(request, result: result, for: endpoint)
 		}
 	}
 	
+	/// Runs the endpoint's response strategy, normalizing decode failures to
+	/// APIError.decodingFailed (strategies may also throw APIError directly).
+	private func decodeResponse<R: ResponseStrategy>(_ strategy: R.Type, from data: Data) throws -> R.Output {
+		do {
+			return try strategy.decode(data, using: responseDecoder)
+		} catch let error as APIError {
+			throw error
+		} catch {
+			throw APIError.decodingFailed(error)
+		}
+	}
+
 	/// Maps raw errors to the public error contract: cancellation surfaces as
 	/// CancellationError so callers can distinguish "task was cancelled" from real
 	/// failures; everything else surfaces as APIError.

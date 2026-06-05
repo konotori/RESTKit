@@ -18,7 +18,7 @@ struct APIClientTests {
             path: "/users/1",
             method: .get,
             requestBody: .none,
-            responseType: .json(User.self)
+            responseType: JSON<User>.self
         )
 
         let result: User = try await client.request(endpoint)
@@ -39,7 +39,7 @@ struct APIClientTests {
             path: "/greet",
             method: .get,
             requestBody: .none,
-            responseType: .text
+            responseType: Text.self
         )
 
         let result: String = try await client.request(endpoint)
@@ -57,7 +57,7 @@ struct APIClientTests {
             path: "/binary",
             method: .get,
             requestBody: .none,
-            responseType: .data
+            responseType: Raw.self
         )
 
         let result: Data = try await client.request(endpoint)
@@ -80,7 +80,7 @@ struct APIClientTests {
             path: "/test",
             method: .get,
             requestBody: .none,
-            responseType: .text
+            responseType: Text.self
         )
 
         let _: String = try await client.request(endpoint)
@@ -101,7 +101,7 @@ struct APIClientTests {
             path: "/users",
             method: .get,
             requestBody: .none,
-            responseType: .text
+            responseType: Text.self
         )
 
         do {
@@ -123,7 +123,7 @@ struct APIClientTests {
             path: "/test",
             method: .get,
             requestBody: .none,
-            responseType: .text
+            responseType: Text.self
         )
 
         let _: String = try await client.request(endpoint)
@@ -149,7 +149,7 @@ struct APIClientTests {
             path: "/users",
             method: .post,
             requestBody: .json(Payload(firstName: "Alice")),
-            responseType: .text
+            responseType: Text.self
         )
 
         let _: String = try await client.request(endpoint)
@@ -168,7 +168,7 @@ struct APIClientTests {
         requiresSendable(APIClient.self)
         requiresSendable(APIError.self)
         requiresSendable(RequestBody.self)
-        requiresSendable(ResponseType.self)
+        requiresSendable(JSON<User>.self)
         requiresSendable(HTTPMethod.self)
 
         // The canonical consumer pattern: a shared client in a static let.
@@ -185,7 +185,7 @@ struct APIClientTests {
             path: "/concurrent",
             method: .get,
             requestBody: .none,
-            responseType: .text
+            responseType: Text.self
         )
 
         try await withThrowingTaskGroup(of: String.self) { group in
@@ -217,7 +217,7 @@ private final class RecordingInterceptor: RequestInterceptor, Sendable {
         self.onAdapt = onAdapt
     }
 
-    func adapt(_ request: URLRequest, for endpoint: Endpoint) async throws -> URLRequest {
+    func adapt(_ request: URLRequest, for endpoint: any Endpoint) async throws -> URLRequest {
         onAdapt()
         return request
     }
@@ -230,7 +230,7 @@ private final class CompletionRecordingInterceptor: RequestInterceptor, Sendable
         self.onComplete = onComplete
     }
 
-    func didComplete(_ request: URLRequest, result: Result<(Data, URLResponse), Error>, for endpoint: Endpoint) async {
+    func didComplete(_ request: URLRequest, result: Result<(Data, URLResponse), Error>, for endpoint: any Endpoint) async {
         onComplete()
     }
 }

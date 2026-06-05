@@ -11,34 +11,10 @@ struct ErrorHandlingTests {
 		mockClient.recordedRequest = nil
 	}
 	
-	// MARK: Type Mismatch
-	@Test("Type mismatch throws correct error")
-	func typeMismatchError() async {
-		let userData = try! JSONEncoder().encode(
-			User(id: 1, name: "Test", email: "email")
-		)
-		mockClient.mockResponse = .init(data: userData, statusCode: 200)
-		
-		let apiClient = APIClient(client: mockClient)
-		let endpoint = TestEndpoint(
-			path: "/users/1",
-			method: .get,
-			requestBody: .none,
-			responseType: .json(User.self)
-		)
-		
-		await #expect {
-			let _: Int = try await apiClient.request(endpoint)
-		} throws: { error in
-			guard let apiError = error as? APIError,
-				  case .typeMismatch = apiError else {
-				return false
-			}
-			
-			return true
-		}
-	}
-	
+	// Note: the old "type mismatch" test is gone by design — since Endpoint
+	// carries its Response strategy as an associated type, requesting the wrong
+	// type is now a compile error, not a runtime APIError.
+
 	// MARK: Network Errors
 	@Test("Network error throws requestFailed")
 	func networkError() async {
@@ -49,7 +25,7 @@ struct ErrorHandlingTests {
 			path: "/users",
 			method: .get,
 			requestBody: .none,
-			responseType: .text
+			responseType: Text.self
 		)
 		
 		await #expect {
@@ -75,7 +51,7 @@ struct ErrorHandlingTests {
 			path: "/users",
 			method: .post,
 			requestBody: .none,
-			responseType: .text
+			responseType: Text.self
 		)
 		
 		await #expect {
@@ -99,7 +75,7 @@ struct ErrorHandlingTests {
 			path: "/users",
 			method: .get,
 			requestBody: .none,
-			responseType: .text
+			responseType: Text.self
 		)
 		
 		await #expect {
@@ -131,7 +107,7 @@ struct ErrorHandlingTests {
 			path: "/users",
 			method: .post,
 			requestBody: .json(FailingPayload()),
-			responseType: .text
+			responseType: Text.self
 		)
 
 		await #expect {
@@ -155,7 +131,7 @@ struct ErrorHandlingTests {
 			path: "/users",
 			method: .get,
 			requestBody: .none,
-			responseType: .text
+			responseType: Text.self
 		)
 
 		await #expect {
@@ -174,7 +150,7 @@ struct ErrorHandlingTests {
 			path: "/users",
 			method: .get,
 			requestBody: .none,
-			responseType: .text
+			responseType: Text.self
 		)
 
 		await #expect {
@@ -192,7 +168,7 @@ struct ErrorHandlingTests {
 			path: "/users",
 			method: .get,
 			requestBody: .none,
-			responseType: .text
+			responseType: Text.self
 		)
 		
 		await #expect {
@@ -217,7 +193,7 @@ struct ErrorHandlingTests {
 			path: "/users",
 			method: .get,
 			requestBody: .none,
-			responseType: .json(User.self)
+			responseType: JSON<User>.self
 		)
 		
 		await #expect {

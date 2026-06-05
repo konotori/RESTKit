@@ -32,10 +32,11 @@ struct APIErrorTests {
         #expect(error.errorDescription?.contains("Failed to decode") == true)
     }
 
-    @Test("typeMismatch has expected and actual in description")
-    func typeMismatchDescription() {
-        let error = APIError.typeMismatch(expected: "String", actual: "Int")
-        #expect(error.errorDescription == "Type mismatch. Expected String, got Int.")
+    @Test("encodingFailed wraps error description")
+    func encodingFailedDescription() {
+        struct CustomError: Error {}
+        let error = APIError.encodingFailed(CustomError())
+        #expect(error.errorDescription?.contains("Failed to encode") == true)
     }
 
     @Test("clientError includes status code")

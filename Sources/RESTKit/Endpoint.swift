@@ -1,13 +1,36 @@
 import Foundation
 
-public protocol Endpoint: Sendable {
+/// Describes a single API call: where it goes, what it sends, and what it returns.
+///
+/// Declare one small struct per endpoint and only override what differs from the
+/// defaults (`headers`, `queryParameters`, `requestBody`, `needsAuthentication`):
+///
+/// ```swift
+/// struct GetUser: Endpoint {
+///     typealias Response = JSON<User>
+///     let id: Int
+///     var baseURL: String { "https://api.example.com" }
+///     var path: String { "/users/\(id)" }
+///     var method: HTTPMethod { .get }
+/// }
+/// let user = try await client.request(GetUser(id: 1))
+/// ```
+///
+/// To share `baseURL` (and other conventions) across endpoints:
+/// - Single backend: `extension Endpoint { var baseURL: String { "https://api.example.com" } }`
+/// - Per service: `protocol GitHubEndpoint: Endpoint {}` +
+///   `extension GitHubEndpoint { var baseURL: String { "https://api.github.com" } }`
+public protocol Endpoint<Response>: Sendable {
+	/// How this endpoint's response data becomes a typed value,
+	/// e.g. `JSON<User>`, `Text`, `Raw`, or a custom `ResponseStrategy`.
+	associatedtype Response: ResponseStrategy
+
     var baseURL: String { get }
     var path: String { get }
     var method: HTTPMethod { get }
     var headers: [String: String]? { get }
     var queryParameters: [String: any Sendable]? { get }
     var requestBody: RequestBody { get }
-    var responseType: ResponseType { get }
 	/// Whether an auth interceptor should attach credentials to this endpoint.
 	/// Defaults to `false`; endpoints that need authentication opt in explicitly.
 	var needsAuthentication: Bool { get }
@@ -16,6 +39,18 @@ public protocol Endpoint: Sendable {
 }
 
 public extension Endpoint {
+	var headers: [String: String]? {
+		nil
+	}
+
+	var queryParameters: [String: any Sendable]? {
+		nil
+	}
+
+	var requestBody: RequestBody {
+		.none
+	}
+
 	var needsAuthentication: Bool {
 		false
 	}

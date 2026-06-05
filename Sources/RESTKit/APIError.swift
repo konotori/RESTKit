@@ -6,7 +6,6 @@ public enum APIError: Error, LocalizedError, Equatable, Sendable {
     case requestFailed(Error)
     case invalidResponse
     case decodingFailed(Error)
-    case typeMismatch(expected: String, actual: String)
     case clientError(statusCode: Int, data: Data?) // 400-499
     case serverError(statusCode: Int, data: Data?) // 500-599
     case redirectionError(statusCode: Int) // 300-399
@@ -25,8 +24,6 @@ public enum APIError: Error, LocalizedError, Equatable, Sendable {
             "Received invalid response from the server."
         case let .decodingFailed(error):
             "Failed to decode response: \(error.localizedDescription)"
-        case let .typeMismatch(expected, actual):
-            "Type mismatch. Expected \(expected), got \(actual)."
         case let .clientError(code, _):
             "Client error (HTTP \(code))."
         case let .serverError(code, _):
@@ -51,8 +48,6 @@ public enum APIError: Error, LocalizedError, Equatable, Sendable {
             return (e1 as NSError).isEqual(e2 as NSError)
         case let (.decodingFailed(e1), .decodingFailed(e2)):
             return (e1 as NSError).isEqual(e2 as NSError)
-        case let (.typeMismatch(a1, b1), .typeMismatch(a2, b2)):
-            return a1 == a2 && b1 == b2
         case let (.clientError(c1, d1), .clientError(c2, d2)):
             return c1 == c2 && d1 == d2
         case let (.serverError(c1, d1), .serverError(c2, d2)):

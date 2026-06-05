@@ -108,30 +108,23 @@ enum TestEnum: String, Codable {
 
 // MARK: - Test Helper
 
-final class TestEndpoint: Endpoint, Sendable {
-	let baseURL: String
-	let path: String
-	let method: HTTPMethod
-	let headers: [String: String]?
-	let queryParameters: [String: any Sendable]?
-	let requestBody: RequestBody
-	let responseType: ResponseType
-
-	init(
-		baseURL: String = "https://api.test.com",
-		path: String,
-		method: HTTPMethod,
-		headers: [String: String]? = nil,
-		queryParameters: [String: any Sendable]? = nil,
-		requestBody: RequestBody,
-		responseType: ResponseType
-	) {
-		self.baseURL = baseURL
-		self.path = path
-		self.method = method
-		self.headers = headers
-		self.queryParameters = queryParameters
-		self.requestBody = requestBody
-		self.responseType = responseType
-	}
+/// Builds the library's `APIEndpoint` with test defaults, so the whole suite
+/// exercises the public generic endpoint. `responseType` only drives inference.
+func TestEndpoint<R: ResponseStrategy>(
+	baseURL: String = "https://api.test.com",
+	path: String,
+	method: HTTPMethod,
+	headers: [String: String]? = nil,
+	queryParameters: [String: any Sendable]? = nil,
+	requestBody: RequestBody = .none,
+	responseType: R.Type
+) -> APIEndpoint<R> {
+	APIEndpoint(
+		baseURL: baseURL,
+		path: path,
+		method: method,
+		headers: headers,
+		queryParameters: queryParameters,
+		requestBody: requestBody
+	)
 }

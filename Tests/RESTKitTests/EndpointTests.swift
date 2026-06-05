@@ -14,7 +14,7 @@ struct EndpointTests {
             path: "/users",
             method: .get,
             requestBody: .none,
-            responseType: .text
+            responseType: Text.self
         )
         
         let request = try endpoint.asURLRequest()
@@ -30,7 +30,7 @@ struct EndpointTests {
             path: "users",
             method: .get,
             requestBody: .none,
-            responseType: .text
+            responseType: Text.self
         )
         
         let request = try endpoint.asURLRequest()
@@ -45,7 +45,7 @@ struct EndpointTests {
             path: "/users",
             method: .get,
             requestBody: .none,
-            responseType: .text
+            responseType: Text.self
         )
         
         let request = try endpoint.asURLRequest()
@@ -60,7 +60,7 @@ struct EndpointTests {
             path: "users",
             method: .get,
             requestBody: .none,
-            responseType: .text
+            responseType: Text.self
         )
         
         let request = try endpoint.asURLRequest()
@@ -75,7 +75,7 @@ struct EndpointTests {
             path: "/users/profile/123",
             method: .get,
             requestBody: .none,
-            responseType: .text
+            responseType: Text.self
         )
         
         let request = try endpoint.asURLRequest()
@@ -90,7 +90,7 @@ struct EndpointTests {
             path: "/users",
             method: .get,
             requestBody: .none,
-            responseType: .text
+            responseType: Text.self
         )
         
         #expect(throws: APIError.invalidURL) {
@@ -108,7 +108,7 @@ struct EndpointTests {
             method: .get,
             queryParameters: ["q": "test", "limit": "10"],
             requestBody: .none,
-            responseType: .text
+            responseType: Text.self
         )
         
         let request = try endpoint.asURLRequest()
@@ -126,7 +126,7 @@ struct EndpointTests {
             method: .get,
             queryParameters: ["q": "hello world & more"],
             requestBody: .none,
-            responseType: .text
+            responseType: Text.self
         )
         
         let request = try endpoint.asURLRequest()
@@ -143,7 +143,7 @@ struct EndpointTests {
             method: .get,
             queryParameters: ["tags": ["swift", "ios"]],
             requestBody: .none,
-            responseType: .text
+            responseType: Text.self
         )
         
         let request = try endpoint.asURLRequest()
@@ -160,7 +160,7 @@ struct EndpointTests {
             method: .get,
             queryParameters: nil,
             requestBody: .none,
-            responseType: .text
+            responseType: Text.self
         )
         
         let request = try endpoint.asURLRequest()
@@ -178,7 +178,7 @@ struct EndpointTests {
             method: .get,
             headers: ["Authorization": "Bearer token", "X-Custom": "value"],
             requestBody: .none,
-            responseType: .text
+            responseType: Text.self
         )
         
         let request = try endpoint.asURLRequest()
@@ -195,7 +195,7 @@ struct EndpointTests {
             method: .post,
             headers: ["Content-Type": "application/xml"], // Explicitly set by user
             requestBody: .json(["name": "Alice"]), // Body là JSON
-            responseType: .text
+            responseType: Text.self
         )
         
         let request = try endpoint.asURLRequest()
@@ -211,7 +211,7 @@ struct EndpointTests {
             method: .post,
             headers: nil, // Not set
             requestBody: .json(["name": "Alice"]),
-            responseType: .text
+            responseType: Text.self
         )
         
         let request = try endpoint.asURLRequest()
@@ -235,7 +235,7 @@ struct EndpointTests {
             method: .post,
             headers: nil,
             requestBody: body,
-            responseType: .text
+            responseType: Text.self
         )
         
         let request = try endpoint.asURLRequest()
@@ -255,7 +255,7 @@ struct EndpointTests {
             method: .post,
             headers: nil,
             requestBody: body,
-            responseType: .text
+            responseType: Text.self
         )
         
         let request = try endpoint.asURLRequest()
@@ -275,7 +275,7 @@ struct EndpointTests {
             method: .post,
             headers: nil,
             requestBody: body,
-            responseType: .text
+            responseType: Text.self
         )
         
         let request = try endpoint.asURLRequest()
@@ -293,7 +293,7 @@ struct EndpointTests {
             method: .post,
             headers: nil,
             requestBody: body,
-            responseType: .text
+            responseType: Text.self
         )
         
         let request = try endpoint.asURLRequest()
@@ -312,7 +312,7 @@ struct EndpointTests {
             method: .get,
             headers: nil,
             requestBody: .none,
-            responseType: .text
+            responseType: Text.self
         )
         
         let request = try endpoint.asURLRequest()
@@ -320,7 +320,28 @@ struct EndpointTests {
         #expect(request.httpBody == nil)
     }
     
-    // MARK: - Endpoint Defaults (needsAuthentication)
+    // MARK: - Endpoint Defaults
+
+    @Test("Minimal endpoint compiles with protocol defaults and builds a clean request")
+    func minimalEndpointUsesDefaults() throws {
+        // Only Response, baseURL, path, method — everything else from defaults.
+        struct GetHealth: Endpoint {
+            typealias Response = Text
+            var baseURL: String { "https://api.test.com" }
+            var path: String { "/health" }
+            var method: HTTPMethod { .get }
+        }
+
+        let endpoint = GetHealth()
+        #expect(endpoint.headers == nil)
+        #expect(endpoint.queryParameters == nil)
+        #expect(endpoint.needsAuthentication == false)
+
+        let request = try endpoint.asURLRequest()
+        #expect(request.url?.absoluteString == "https://api.test.com/health")
+        #expect(request.httpBody == nil)
+        #expect(request.value(forHTTPHeaderField: "Content-Type") == nil)
+    }
 
     @Test("Default needsAuthentication is false")
     func defaultNeedsAuthentication() {
@@ -329,7 +350,7 @@ struct EndpointTests {
             path: "/users",
             method: .get,
             requestBody: .none,
-            responseType: .text
+            responseType: Text.self
         )
         #expect(endpoint.needsAuthentication == false)
     }
@@ -347,7 +368,7 @@ struct EndpointTests {
             path: "/users",
             method: .post,
             requestBody: .json(Payload(firstName: "Alice")),
-            responseType: .text
+            responseType: Text.self
         )
 
         let encoder = JSONEncoder()
@@ -378,7 +399,7 @@ struct EndpointTests {
                 path: "/test",
                 method: method,
                 requestBody: .none,
-                responseType: .text
+                responseType: Text.self
             )
             
             let request = try endpoint.asURLRequest()

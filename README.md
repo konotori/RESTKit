@@ -1,9 +1,32 @@
 # RESTKit
 
+![Swift 6.0](https://img.shields.io/badge/Swift-6.0-F05138?logo=swift&logoColor=white)
+![Platforms](https://img.shields.io/badge/Platforms-iOS%2013%2B%20%7C%20macOS%2011%2B-blue)
+![SwiftPM](https://img.shields.io/badge/SwiftPM-compatible-brightgreen)
+![License](https://img.shields.io/badge/License-MIT-lightgrey)
+
 A lightweight, Swift 6-native networking foundation. Fully `Sendable`, data-race safe, and **compile-time typed**: an endpoint declares what it returns, so requesting the wrong type is a build error — not a runtime surprise.
 
 - Swift 6 language mode, strict concurrency, zero dependencies
 - iOS 13+ / macOS 11+
+
+## Table of Contents
+
+- [Features](#features)
+- [Installation](#installation)
+- [Quick Start](#quick-start)
+- [Core Concepts](#core-concepts)
+  - [Endpoint](#endpoint)
+  - [ResponseStrategy](#responsestrategy)
+  - [RequestBody](#requestbody)
+  - [APIClient](#apiclient)
+  - [Error handling](#error-handling)
+- [Organizing Endpoints](#organizing-endpoints)
+- [Interceptors](#interceptors)
+- [Retry (decorator pattern)](#retry-decorator-pattern)
+- [Testing](#testing)
+- [Design Goals](#design-goals)
+- [License](#license)
 
 ## Features
 
@@ -16,9 +39,30 @@ A lightweight, Swift 6-native networking foundation. Fully `Sendable`, data-race
 
 ## Installation
 
+### Xcode
+
+1. **File → Add Package Dependencies…**
+2. Paste the repository URL into the search field:
+   ```
+   https://github.com/konotori/RESTKit.git
+   ```
+3. Set the dependency rule to **Up to Next Major Version** from `1.0.0`, then click **Add Package**.
+
+### Swift Package Manager
+
+Add the dependency to your `Package.swift`:
+
 ```swift
-// Package.swift
 .package(url: "https://github.com/konotori/RESTKit.git", from: "1.0.0")
+```
+
+Then add `RESTKit` to your target:
+
+```swift
+.target(
+    name: "MyApp",
+    dependencies: ["RESTKit"]
+)
 ```
 
 ## Quick Start

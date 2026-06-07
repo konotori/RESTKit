@@ -1,18 +1,20 @@
 # RESTKit
 
-![Swift 6.0](https://img.shields.io/badge/Swift-6.0-F05138?logo=swift&logoColor=white)
-![Platforms](https://img.shields.io/badge/Platforms-iOS%2013%2B%20%7C%20macOS%2011%2B-blue)
-![SwiftPM](https://img.shields.io/badge/SwiftPM-compatible-brightgreen)
-![License](https://img.shields.io/badge/License-MIT-lightgrey)
+**A lightweight, Swift 6-native networking foundation — compile-time typed, fully `Sendable`, zero dependencies.**
 
-A lightweight, Swift 6-native networking foundation. Fully `Sendable`, data-race safe, and **compile-time typed**: an endpoint declares what it returns, so requesting the wrong type is a build error — not a runtime surprise.
+[![Swift 6.0](https://img.shields.io/badge/Swift-6.0-F05138?logo=swift&logoColor=white)](https://swift.org)
+[![Platforms](https://img.shields.io/badge/Platforms-iOS%2013%2B%20%7C%20macOS%2011%2B-blue?logo=apple)](#requirements)
+[![SPM](https://img.shields.io/badge/SwiftPM-compatible-brightgreen)](#installation)
+[![License: MIT](https://img.shields.io/badge/License-MIT-lightgrey)](LICENSE)
 
-- Swift 6 language mode, strict concurrency, zero dependencies
-- iOS 13+ / macOS 11+
+> English | [Tiếng Việt](README.vi.md)
+
+An endpoint declares what it returns, so requesting the wrong type is a build error — not a runtime surprise. Data-race safe under strict concurrency, with one place to configure your API's conventions.
 
 ## Table of Contents
 
 - [Features](#features)
+- [Requirements](#requirements)
 - [Installation](#installation)
 - [Quick Start](#quick-start)
 - [Core Concepts](#core-concepts)
@@ -36,6 +38,14 @@ A lightweight, Swift 6-native networking foundation. Fully `Sendable`, data-race
 - **Interceptors** — adapt requests (auth, API keys) and observe completions (logging, metrics).
 - **One place to configure conventions** — `bodyEncoder` / `responseDecoder` (snake_case, date formats) live on the client.
 - **Honest errors** — encoding failures throw instead of silently sending an empty body; task cancellation surfaces as `CancellationError`, never wrapped as a network failure.
+
+## Requirements
+
+| | Minimum |
+|---|---|
+| iOS | 13.0 |
+| macOS | 11.0 |
+| Swift | 6.0 (SwiftPM tools 6.0) |
 
 ## Installation
 
@@ -447,4 +457,4 @@ swift test
 
 ## License
 
-MIT
+[MIT](LICENSE)

@@ -424,6 +424,7 @@ actor AuthTokenStore {
 
     /// The token to attach to a request (refreshes once if we have none yet).
     func token() async throws -> String {
+        if let refreshTask { return try await refreshTask.value }   // proactive: join an in-flight refresh
         if let accessToken { return accessToken }
         return try await performRefresh()
     }
@@ -495,6 +496,18 @@ let client = AuthRefreshingClient(
     store: store
 )
 ```
+
+#### Reactive vs. proactive refresh
+
+Dòng đầu tiên của `token()` là khác biệt *duy nhất* giữa hai hành vi, và nó chỉ quan trọng với một request **bắt đầu trong lúc đã có một refresh đang chạy**:
+
+| | Có dòng đó (**proactive**, như trên) | Bỏ dòng đó (**reactive**) |
+|---|---|---|
+| Request đến muộn | Chờ refresh đang chạy, rồi gửi **một lần** với token mới | Gửi **một lần với token cũ**, tự ăn `401`, *rồi* mới join refresh |
+| Số network call của request muộn đó | 1 (call thật) | 2 (1 call `401` thừa + 1 retry) |
+| Số lần refresh | 1 | 1 |
+
+Cả hai bản đều **gộp về đúng một lần refresh** và resume mọi request đang pending khi refresh xong — proactive chỉ bỏ được cái call thừa của request đến muộn. Các request **cùng hết hạn một lúc** (case phổ biến) thì hành xử y hệt nhau ở cả hai bản: cùng bay, cùng `401`, chung một refresh, rồi retry. Khác biệt chỉ lộ ra với request đến *sau khi* refresh đã khởi động. Bắt đầu bằng reactive nếu muốn ít chi tiết hơn; thêm dòng đó khi cái round-trip thừa thực sự đáng quan tâm.
 
 ### Retry kèm backoff & jitter
 

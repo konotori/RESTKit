@@ -423,6 +423,7 @@ actor AuthTokenStore {
 
     /// The token to attach to a request (refreshes once if we have none yet).
     func token() async throws -> String {
+        if let refreshTask { return try await refreshTask.value }   // proactive: join an in-flight refresh
         if let accessToken { return accessToken }
         return try await performRefresh()
     }
@@ -494,6 +495,18 @@ let client = AuthRefreshingClient(
     store: store
 )
 ```
+
+#### Reactive vs. proactive refresh
+
+The first line of `token()` is the *only* difference between two behaviors, and it matters for a request that **starts while a refresh is already in flight**:
+
+| | Line present (**proactive**, shown above) | Line removed (**reactive**) |
+|---|---|---|
+| A latecomer request | Awaits the in-flight refresh, then fires **once** with the fresh token | Fires **once with the stale token**, takes its own `401`, *then* joins the refresh |
+| Network calls for that latecomer | 1 (the real one) | 2 (a doomed `401` + the retry) |
+| Refreshes triggered | 1 | 1 |
+
+Both versions **coalesce to exactly one refresh** and resume every pending request once it lands — proactive simply skips the extra doomed call from a latecomer. Requests that *all* expire together (the common case) behave identically either way: they fire, all `401`, share one refresh, and retry. The distinction only appears for a request that arrives *after* a refresh has already begun. Start reactive if you prefer fewer moving parts; add the line when the wasted round-trip matters.
 
 ### Retry with backoff & jitter
 

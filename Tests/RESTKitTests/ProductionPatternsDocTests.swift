@@ -28,6 +28,7 @@ actor AuthTokenStore {
 
     /// The token to attach to a request (refreshes once if we have none yet).
     func token() async throws -> String {
+        if let refreshTask { return try await refreshTask.value }   // proactive: join an in-flight refresh
         if let accessToken { return accessToken }
         return try await performRefresh()
     }
@@ -430,6 +431,32 @@ actor OrderRecorder {
     func add(_ name: String) { order.append(name) }
 }
 
+/// Refresh service that signals when it starts and blocks until the test releases
+/// it — lets a test hold a refresh "in flight" while another request arrives.
+final class GatedRefreshService: TokenRefreshService, @unchecked Sendable {
+    private let lock = NSLock()
+    private var _count = 0
+    var count: Int { lock.lock(); defer { lock.unlock() }; return _count }
+    private func bump() { lock.lock(); defer { lock.unlock() }; _count += 1 }
+
+    private let newToken: String
+    let entered: Gate
+    let release: Gate
+
+    init(newToken: String, entered: Gate, release: Gate) {
+        self.newToken = newToken
+        self.entered = entered
+        self.release = release
+    }
+
+    func refresh() async throws -> String {
+        bump()
+        entered.open()          // signal: a refresh is now in flight
+        await release.wait()    // block until the test lets it finish
+        return newToken
+    }
+}
+
 private func userData(id: Int, name: String) -> Data {
     Data(#"{"id":\#(id),"name":"\#(name)","email":null}"#.utf8)
 }
@@ -469,6 +496,46 @@ struct ProductionPatternsDocTests {
         #expect(users.count == n)
         #expect(users.allSatisfy { $0.name == "Alice" })
         #expect(refresh.count == 1)                             // ← single-flight
+    }
+
+    /// Proactive `token()`: a request arriving WHILE a refresh is in flight waits for
+    /// it and fires once with the fresh token — instead of firing a doomed stale call.
+    @Test func proactiveTokenWaitsForInFlightRefresh() async throws {
+        let entered = Gate()
+        let release = Gate()
+        let refresh = GatedRefreshService(newToken: "v1", entered: entered, release: release)
+        let store = AuthTokenStore(service: refresh, initialToken: "v0")
+        let body = userData(id: 1, name: "Alice")
+        let staleCalls = LockedBox(0)
+
+        let stub = StubHTTPClient { request, _ in
+            if request.value(forHTTPHeaderField: "Authorization") == "Bearer v1" {
+                return (body, 200)
+            }
+            staleCalls.value += 1                               // a request fired with the stale token
+            return (Data(#"{"message":"unauthorized"}"#.utf8), 401)
+        }
+        let core = APIClient(client: stub, interceptors: [BearerAuthInterceptor(store: store)])
+        let client = AuthRefreshingClient(base: core, store: store)
+        let endpoint = APIEndpoint<JSON<User>>(
+            baseURL: "https://api.test.com", path: "/me", method: .get, needsAuthentication: true
+        )
+
+        // A fires with the stale token, 401s, and starts the refresh (which blocks).
+        let a = Task { try await client.request(endpoint) }
+        await entered.wait()                                    // refresh is now in flight
+
+        // B arrives mid-refresh. Proactive token() makes it WAIT, not fire a doomed call.
+        let b = Task { try await client.request(endpoint) }
+        try await Task.sleep(nanoseconds: 150_000_000)          // give B time to park in token()
+        release.open()                                          // let the refresh complete
+
+        let userA = try await a.value
+        let userB = try await b.value
+        #expect(userA.name == "Alice")
+        #expect(userB.name == "Alice")
+        #expect(refresh.count == 1)                             // one refresh
+        #expect(staleCalls.value == 1)                          // only A's discovery 401 — B never sent a stale call
     }
 
     @Test func deduplicationCoalescesInFlightGETs() async throws {

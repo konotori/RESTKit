@@ -27,10 +27,14 @@ An endpoint declares what it returns, so requesting the wrong type is a build er
 - [Interceptors](#interceptors)
 - [Production Patterns](#production-patterns)
   - [Token refresh (single-flight)](#token-refresh-single-flight)
+  - [Pre-emptive token refresh](#pre-emptive-token-refresh)
   - [Retry with backoff & jitter](#retry-with-backoff--jitter)
+  - [Idempotency keys](#idempotency-keys)
   - [Circuit breaker](#circuit-breaker)
+  - [Rate limiting (token bucket)](#rate-limiting-token-bucket)
   - [Deduplication (in-flight coalescing)](#deduplication-in-flight-coalescing)
   - [Prioritization](#prioritization)
+  - [Offline queue / replay (outbox)](#offline-queue--replay-outbox)
   - [Composing them](#composing-them)
 - [Testing](#testing)
 - [Design Goals](#design-goals)
@@ -393,6 +397,8 @@ Every snippet below compiles against RESTKit as-is and was verified under concur
 
 > Decorators are `Sendable` value types wrapping `let base: any APIClientProtocol` — they nest freely (see [Composing them](#composing-them)) and the shared-instance pattern still works.
 
+**In this section:** *Auth* — [token refresh](#token-refresh-single-flight), [pre-emptive refresh](#pre-emptive-token-refresh) · *Resilience* — [retry](#retry-with-backoff--jitter), [idempotency keys](#idempotency-keys), [circuit breaker](#circuit-breaker) · *Traffic shaping* — [rate limiting](#rate-limiting-token-bucket), [deduplication](#deduplication-in-flight-coalescing), [prioritization](#prioritization) · *Offline* — [offline queue](#offline-queue--replay-outbox) · then [composing them](#composing-them).
+
 ### Token refresh (single-flight)
 
 **What** — When an access token expires mid-session, transparently refresh it and replay the failed request so callers never see the `401`. Concurrent `401`s must trigger **one** refresh, not a stampede.
@@ -508,6 +514,79 @@ The first line of `token()` is the *only* difference between two behaviors, and 
 
 Both versions **coalesce to exactly one refresh** and resume every pending request once it lands — proactive simply skips the extra doomed call from a latecomer. Requests that *all* expire together (the common case) behave identically either way: they fire, all `401`, share one refresh, and retry. The distinction only appears for a request that arrives *after* a refresh has already begun. Start reactive if you prefer fewer moving parts; add the line when the wasted round-trip matters.
 
+### Pre-emptive token refresh
+
+**What** — Refresh the token *before* it expires (not after a `401`), so a burst of requests never sends a token that's about to be rejected.
+
+**When** — The token carries an expiry you can read (JWT `exp`, OAuth `expires_in`). This is the only thing that prevents the "10 concurrent requests → 10 × `401`" stampede: reactive *and* proactive both still let a *simultaneous* batch fire stale, because the refresh only starts after the first `401` comes back. Pre-emptive refreshes ahead of time, so the batch goes out already-valid.
+
+**How it works** — Give the token an `expiresAt`. `token()` returns the cached value only while it's comfortably valid (a `leeway` before expiry); otherwise it refreshes *first* — reusing the same single-flight `performRefresh()`, so a concurrent batch still collapses to one refresh and zero stale sends. Keep the `401`-catch decorator as a safety net for server-side revocation.
+
+```swift
+struct AccessToken: Sendable {
+    let value: String
+    let expiresAt: Date
+}
+
+protocol ExpiringTokenService: Sendable {
+    func refresh() async throws -> AccessToken
+}
+
+actor PreemptiveTokenStore {
+    private let service: ExpiringTokenService
+    private var token: AccessToken?
+    private var refreshTask: Task<AccessToken, Error>?
+    private let leeway: TimeInterval
+
+    init(service: ExpiringTokenService, initial: AccessToken? = nil, leeway: TimeInterval = 30) {
+        self.service = service
+        self.token = initial
+        self.leeway = leeway
+    }
+
+    /// Refreshes *before* the token expires (within `leeway`), so requests rarely
+    /// send a token that is about to be rejected.
+    func token() async throws -> String {
+        if let refreshTask { return try await refreshTask.value.value }   // join in-flight refresh
+        if let token, token.expiresAt.timeIntervalSinceNow > leeway {
+            return token.value                                            // still comfortably valid
+        }
+        return try await performRefresh().value
+    }
+
+    /// Reactive safety net for a 401 that still slips through (e.g. server-side revocation).
+    func refresh(replacing staleValue: String) async throws -> String {
+        if let token, token.value != staleValue { return token.value }
+        return try await performRefresh().value
+    }
+
+    private func performRefresh() async throws -> AccessToken {
+        if let refreshTask { return try await refreshTask.value }
+        let task = Task<AccessToken, Error> {
+            let new = try await service.refresh()
+            token = new
+            return new
+        }
+        refreshTask = task
+        defer { refreshTask = nil }
+        return try await task.value
+    }
+}
+
+struct PreemptiveAuthInterceptor: RequestInterceptor {
+    let store: PreemptiveTokenStore
+
+    func adapt(_ request: URLRequest, for endpoint: any Endpoint) async throws -> URLRequest {
+        guard endpoint.needsAuthentication else { return request }
+        var request = request
+        request.setValue("Bearer \(try await store.token())", forHTTPHeaderField: "Authorization")
+        return request
+    }
+}
+```
+
+> Layer `AuthRefreshingClient` on top as a safety net for the rare `401` that still slips through (revocation, clock skew). If you use both the interceptor and that decorator, factor a small `TokenProvider` protocol (`token()` / `refresh(replacing:)`) so both accept either store.
+
 ### Retry with backoff & jitter
 
 **What** — Automatically re-send a request that failed for a *transient* reason, backing off between attempts.
@@ -570,6 +649,71 @@ let client = RetryingClient(base: APIClient(), maxAttempts: 3, baseDelay: 0.3)  
 ```
 
 > **Limitation — `Retry-After`:** `APIError` carries the response body (`Data?`) but not headers, so a decorator can't read a server's `Retry-After`. To honor it, capture the header in a custom `ResponseValidator` or interceptor and surface the wait via `APIError.custom`.
+
+### Idempotency keys
+
+**What** — Attach a stable `Idempotency-Key` to mutating requests so a retried (or double-tapped) request is performed *once* by the server — no double charge, no duplicate order.
+
+**When** — Any non-idempotent mutation you might retry (payments, order creation). It's what makes **retrying a `POST` safe** — without it, the retry recipe deliberately skips non-idempotent methods.
+
+**How it works** — The endpoint carries the key, generated **once** when the endpoint value is created, so every retry of that value sends the *same* key (a fresh per-`adapt` UUID would defeat the point). An interceptor attaches it. With the key in place, widen the retry guard to also cover keyed endpoints.
+
+```swift
+protocol IdempotentEndpoint: Endpoint {
+    var idempotencyKey: String { get }
+}
+
+struct IdempotencyKeyInterceptor: RequestInterceptor {
+    func adapt(_ request: URLRequest, for endpoint: any Endpoint) async throws -> URLRequest {
+        guard let endpoint = endpoint as? any IdempotentEndpoint else { return request }
+        var request = request
+        request.setValue(endpoint.idempotencyKey, forHTTPHeaderField: "Idempotency-Key")
+        return request
+    }
+}
+
+/// Like RetryingClient, but also retries an endpoint carrying an idempotency key —
+/// the server dedupes replays, so a keyed POST/PATCH is safe to retry.
+struct IdempotentRetryingClient: APIClientProtocol {
+    let base: any APIClientProtocol
+    let maxAttempts: Int
+    let baseDelay: TimeInterval
+
+    func request<E: Endpoint>(_ endpoint: E) async throws -> E.Response.Output {
+        var attempt = 1
+        while true {
+            do {
+                return try await base.request(endpoint)
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch let error as APIError {
+                let safeToRetry = HTTPMethod.idempotentMethods.contains(endpoint.method)
+                    || endpoint is any IdempotentEndpoint       // key makes a mutation replay-safe
+                guard attempt < maxAttempts, safeToRetry, RetryingClient.isRetryable(error)
+                else { throw error }
+                let ceiling = baseDelay * Double(1 << (attempt - 1))
+                try await Task.sleep(nanoseconds: UInt64(Double.random(in: 0 ... ceiling) * 1_000_000_000))
+                attempt += 1
+            }
+        }
+    }
+}
+```
+
+A mutating endpoint mints its key once, at creation:
+
+```swift
+struct CreateCharge: IdempotentEndpoint {
+    typealias Response = JSON<Charge>
+    let idempotencyKey = UUID().uuidString   // generated ONCE → reused on every retry
+    let amount: Int
+
+    var path: String { "/charges" }
+    var method: HTTPMethod { .post }
+}
+```
+
+> The key must be stable across retries → it lives on the endpoint **value**, not generated in `adapt`. If you replay across app launches (see [offline queue](#offline-queue--replay-outbox)), persist the key alongside the request.
 
 ### Circuit breaker
 
@@ -668,6 +812,52 @@ let client = CircuitBreakingClient(
 
 > One breaker tracks one circuit — use a separate instance per host/service. This version admits whichever requests arrive first during the half-open window; a stricter variant would let through exactly one trial.
 
+### Rate limiting (token bucket)
+
+**What** — Pace *outgoing* requests to stay under an API's published rate limit, smoothing bursts instead of waiting to be `429`'d.
+
+**When** — Rate-limited APIs. Distinct from the [circuit breaker](#circuit-breaker) (reacts to *failures*) and [prioritization](#prioritization) (caps *concurrency*): this caps *throughput over time*.
+
+**How it works** — A token-bucket limiter: `burst` requests may go back-to-back after an idle period, then a steady `rate`. It's implemented with a single reserved `cursor` advanced *before* sleeping, so concurrent callers queue in order (fair, no starvation). The decorator awaits a slot before each request.
+
+```swift
+actor RateLimiter {
+    private let spacing: TimeInterval        // average gap between requests = 1 / rate
+    private let burstWindow: TimeInterval    // how far `cursor` may sit behind now = the burst budget
+    private var cursor: Date = .distantPast  // when the most-recently-admitted request was scheduled
+
+    /// `rate` = requests/sec sustained; `burst` = how many may go back-to-back after idle.
+    init(rate: Double, burst: Int) {
+        self.spacing = 1 / rate
+        self.burstWindow = Double(burst - 1) / rate
+    }
+
+    func acquire() async throws {
+        let now = Date()
+        // Reserve the next slot synchronously (before sleeping) so concurrent callers
+        // queue in order; never let the schedule fall more than `burstWindow` behind now.
+        let scheduled = max(cursor + spacing, now - burstWindow)
+        cursor = scheduled
+        let wait = scheduled.timeIntervalSince(now)
+        if wait > 0 {
+            try await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
+        }
+    }
+}
+
+struct RateLimitedClient: APIClientProtocol {
+    let base: any APIClientProtocol
+    let limiter: RateLimiter
+
+    func request<E: Endpoint>(_ endpoint: E) async throws -> E.Response.Output {
+        try await limiter.acquire()
+        return try await base.request(endpoint)
+    }
+}
+
+let client = RateLimitedClient(base: APIClient(), limiter: RateLimiter(rate: 10, burst: 5))
+```
+
 ### Deduplication (in-flight coalescing)
 
 **What** — When several callers ask for the *same* resource at the same time, fire **one** network call and share its result with all of them.
@@ -727,11 +917,53 @@ let client = DeduplicatingClient(base: APIClient())
 
 ### Prioritization
 
-**What** — Cap how many requests run at once, and when more are queued, let high-priority ones (user-initiated, on-screen content) jump ahead of low-priority ones (prefetch, analytics).
+Cap how many requests run at once — and, optionally, order the queue so important requests go first. **Two levels; pick what you actually need.**
 
-**When** — Limited bandwidth or connections; you don't want a batch of prefetches delaying the request the user is actually waiting on.
+**Level 1 — just cap concurrency.** The common case: "never more than N in flight" to protect the device and connection (prefetches shouldn't open 50 sockets). A plain semaphore is all you need:
 
-**How it works** — An async semaphore with `maxConcurrent` slots. When full, callers suspend on a continuation stored in a priority-ordered list; each `release()` hands the freed slot to the **highest-priority waiter** (FIFO within a level). Cancelling a queued request removes its waiter and throws `CancellationError`, so a disappeared SwiftUI view never holds a slot hostage.
+```swift
+actor ConcurrencyLimiter {
+    private let limit: Int
+    private var inUse = 0
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    init(limit: Int) { self.limit = limit }
+
+    func acquire() async {
+        if inUse < limit { inUse += 1; return }
+        await withCheckedContinuation { waiters.append($0) }   // park (FIFO)
+    }
+
+    func release() {
+        if waiters.isEmpty { inUse -= 1 } else { waiters.removeFirst().resume() }
+    }
+}
+
+struct ConcurrencyLimitedClient: APIClientProtocol {
+    let base: any APIClientProtocol
+    let limiter: ConcurrencyLimiter
+
+    func request<E: Endpoint>(_ endpoint: E) async throws -> E.Response.Output {
+        await limiter.acquire()
+        do {
+            let result = try await base.request(endpoint)
+            await limiter.release()
+            return result
+        } catch {
+            await limiter.release()
+            throw error
+        }
+    }
+}
+
+let client = ConcurrencyLimitedClient(base: APIClient(), limiter: ConcurrencyLimiter(limit: 4))
+```
+
+> Trade-off: it's FIFO and doesn't special-case cancellation — a cancelled *queued* request still waits its turn before bailing (it won't deadlock, it just isn't prompt). Fine for most apps. Reach for Level 2 only if you need ordering or prompt cancellation.
+
+**Level 2 — cap *and* prioritize.** Use a priority gate when queued requests must be **ordered** (user-initiated ahead of prefetch/analytics) **and** a cancelled queued request must bail **immediately** (never holding a slot hostage when a SwiftUI view disappears). This is more intricate — only adopt it when those two properties matter.
+
+**How it works** — An async semaphore with `maxConcurrent` slots. When full, callers suspend on a continuation stored in a priority-ordered list; each `release()` hands the freed slot to the **highest-priority waiter** (FIFO within a level). Cancelling a queued request removes its waiter and throws `CancellationError`.
 
 ```swift
 actor PriorityGate {
@@ -824,6 +1056,80 @@ let client = PrioritizedClient(
     priorityFor: { $0.needsAuthentication ? .high : .normal }
 )
 ```
+
+### Offline queue / replay (outbox)
+
+**What** — Persist mutations made while offline and replay them, in order, when connectivity returns.
+
+**When** — Offline-first apps; fire-and-forget mutations (analytics, "mark as read", outgoing messages) where the caller doesn't need the server's response immediately.
+
+**How it works** — Unlike the others, this is **not** an `APIClientProtocol` decorator: an offline mutation has no response to return, so the caller gets an enqueue acknowledgement instead. `submit` queues a (type-erased) send; `drain` (call it when the network returns) replays FIFO. A connectivity error keeps the item and stops; any other failure is **permanent** → the item is dropped and reported via `onResult`, so a poison message can't block the queue forever.
+
+```swift
+actor Outbox {
+    enum Outcome: Sendable { case sent, dropped(APIError) }
+
+    private struct Item {
+        let label: String
+        let send: @Sendable () async throws -> Void
+    }
+
+    private let client: any APIClientProtocol
+    private let onResult: @Sendable (String, Outcome) -> Void
+    private var pending: [Item] = []
+
+    init(client: any APIClientProtocol, onResult: @escaping @Sendable (String, Outcome) -> Void = { _, _ in }) {
+        self.client = client
+        self.onResult = onResult
+    }
+
+    var pendingCount: Int { pending.count }
+
+    /// Enqueue a mutation (fire-and-forget). `label` identifies it in `onResult`.
+    func submit<E: Endpoint>(_ endpoint: E, label: String) {
+        let client = self.client
+        pending.append(Item(label: label, send: { _ = try await client.request(endpoint) }))
+    }
+
+    /// Replay in order. Call when connectivity returns. A connectivity error keeps
+    /// the item and stops (retry on the next drain); any other failure is permanent,
+    /// so the item is dropped and reported — it can't block the queue forever.
+    func drain() async {
+        while let item = pending.first {
+            do {
+                try await item.send()
+                pending.removeFirst()
+                onResult(item.label, .sent)
+            } catch let error as APIError where Self.isConnectivity(error) {
+                break
+            } catch let error as APIError {
+                pending.removeFirst()
+                onResult(item.label, .dropped(error))
+            } catch {
+                break   // cancellation / unknown → keep, try later
+            }
+        }
+    }
+
+    static func isConnectivity(_ error: APIError) -> Bool {
+        guard case let .requestFailed(underlying) = error, let urlError = underlying as? URLError else {
+            return false
+        }
+        return [.notConnectedToInternet, .networkConnectionLost, .timedOut, .cannotConnectToHost]
+            .contains(urlError.code)
+    }
+}
+
+// Submit while offline; drain when the path comes back (e.g. from NWPathMonitor):
+let outbox = Outbox(client: APIClient()) { label, outcome in
+    if case let .dropped(error) = outcome { log("dropped \(label): \(error)") }
+}
+await outbox.submit(MarkAsRead(id: 42), label: "read-42")
+// ...later, on reconnect...
+await outbox.drain()
+```
+
+> In-memory here. To survive app relaunches, persist an encodable representation of each request (URL / method / body / idempotency key) to disk instead of a closure, and rebuild the queue on launch. Because it's fire-and-forget, surface ultimate failures through `onResult` (a badge, a log, a re-prompt).
 
 ### Composing them
 
